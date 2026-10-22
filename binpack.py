@@ -65,11 +65,63 @@ class BinPackCodecV2:
         self.dctx = zstd.ZstdDecompressor()
 
     @staticmethod
+    def _find_code_bounds(data: bytes) -> tuple:
+        n = len(data)
+        # 1. PE Section Header Table (.text / IMAGE_SCN_MEM_EXECUTE)
+        if n >= 0x40 and data[:2] == b"MZ":
+            pe_off = struct.unpack("<I", data[0x3C:0x40])[0]
+            if pe_off <= n - 24 and data[pe_off:pe_off+4] == b"PE\x00\x00":
+                num_sec = struct.unpack("<H", data[pe_off+6:pe_off+8])[0]
+                opt_sz = struct.unpack("<H", data[pe_off+20:pe_off+22])[0]
+                sec_tbl = pe_off + 24 + opt_sz
+                for i in range(num_sec):
+                    entry = sec_tbl + i * 40
+                    if entry + 40 > n:
+                        break
+                    raw_sz, raw_ptr = struct.unpack("<II", data[entry+16:entry+24])
+                    charact = struct.unpack("<I", data[entry+36:entry+40])[0]
+                    is_code = (data[entry:entry+5] == b".text") or bool(charact & 0x20000000)
+                    if is_code and raw_sz > 0 and raw_ptr < n:
+                        if raw_ptr + raw_sz <= n:
+                            return raw_ptr, raw_sz
+        # 2. ELF Program Header Table (PT_LOAD + PF_X)
+        if n >= 56 and data[:4] == b"\x7fELF":
+            elf_class = data[4]
+            if elf_class == 1 and n >= 52:
+                phoff = struct.unpack("<I", data[28:32])[0]
+                phentsize = struct.unpack("<H", data[42:44])[0]
+                phnum = struct.unpack("<H", data[44:46])[0]
+                if phentsize >= 32 and phoff < n:
+                    for i in range(phnum):
+                        entry = phoff + i * phentsize
+                        if entry + 32 > n:
+                            break
+                        p_type, p_offset, _, p_filesz, p_flags = struct.unpack("<IIIII", data[entry:entry+20] + data[entry+24:entry+28])
+                        if p_type == 1 and (p_flags & 1) and p_filesz > 0 and p_offset + p_filesz <= n:
+                            return p_offset, p_filesz
+            elif elf_class == 2 and n >= 64:
+                phoff = struct.unpack("<Q", data[32:40])[0]
+                phentsize = struct.unpack("<H", data[54:56])[0]
+                phnum = struct.unpack("<H", data[56:58])[0]
+                if phentsize >= 56 and phoff < n:
+                    for i in range(phnum):
+                        entry = phoff + i * phentsize
+                        if entry + 56 > n:
+                            break
+                        p_type, p_flags = struct.unpack("<II", data[entry:entry+8])
+                        p_offset = struct.unpack("<Q", data[entry+8:entry+16])[0]
+                        p_filesz = struct.unpack("<Q", data[entry+32:entry+40])[0]
+                        if p_type == 1 and (p_flags & 1) and p_filesz > 0 and p_offset + p_filesz <= n:
+                            return p_offset, p_filesz
+        return 0, n
+
+    @staticmethod
     def _filter_bcj_x86(data: bytes, encoding: bool) -> bytes:
+        offset, length = BinPackCodecV2._find_code_bounds(data)
         d = bytearray(data)
-        n = len(d)
-        i = 0
-        while i <= n - 5:
+        i = offset
+        end = offset + length
+        while i <= end - 5:
             b = d[i]
             if b == 0xE8 or b == 0xE9:
                 src = d[i+1] | (d[i+2] << 8) | (d[i+3] << 16) | (d[i+4] << 24)
@@ -85,13 +137,14 @@ class BinPackCodecV2:
 
     @staticmethod
     def _filter_bcj_arm(data: bytes, encoding: bool) -> bytes:
+        offset, length = BinPackCodecV2._find_code_bounds(data)
         d = bytearray(data)
-        n = len(d)
-        for i in range(0, n - 3, 4):
+        end = offset + length
+        for i in range(offset, end - 3, 4):
             if d[i + 3] == 0xEB:  # ARM32 BL opcode
                 src = d[i] | (d[i+1] << 8) | (d[i+2] << 16)
-                offset = (i + 8) >> 2
-                dest = (src + offset) & 0xFFFFFF if encoding else (src - offset) & 0xFFFFFF
+                offset_val = (i + 8) >> 2
+                dest = (src + offset_val) & 0xFFFFFF if encoding else (src - offset_val) & 0xFFFFFF
                 d[i] = dest & 0xFF
                 d[i+1] = (dest >> 8) & 0xFF
                 d[i+2] = (dest >> 16) & 0xFF
@@ -99,14 +152,15 @@ class BinPackCodecV2:
 
     @staticmethod
     def _filter_bcj_arm64(data: bytes, encoding: bool) -> bytes:
+        offset, length = BinPackCodecV2._find_code_bounds(data)
         d = bytearray(data)
-        n = len(d)
-        for i in range(0, n - 3, 4):
+        end = offset + length
+        for i in range(offset, end - 3, 4):
             instr = d[i] | (d[i+1] << 8) | (d[i+2] << 16) | (d[i+3] << 24)
             if (instr >> 26) == 0x25:  # AArch64 BL instruction
                 src = instr & 0x03FFFFFF
-                offset = i >> 2
-                dest = (src + offset) & 0x03FFFFFF if encoding else (src - offset) & 0x03FFFFFF
+                offset_val = i >> 2
+                dest = (src + offset_val) & 0x03FFFFFF if encoding else (src - offset_val) & 0x03FFFFFF
                 instr = (instr & 0xFC000000) | dest
                 d[i] = instr & 0xFF
                 d[i+1] = (instr >> 8) & 0xFF

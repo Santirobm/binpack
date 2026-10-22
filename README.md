@@ -60,14 +60,14 @@ Comparisons against Meta's **Zstandard Level 22 (Ultra)** and standard Deflate (
 
 | Dataset File | Data Format | Uncompressed | Meta Zstd L22 | BINPACK v2 (Filter + Zstd) | Net Savings vs Zstd |
 | :--- | :--- | :---: | :---: | :---: | :---: |
-| **`ooffice`** (Silesia) | Compiled x86 Executable | 6,152,192 B | 2,594,905 B (57.8%) | **2,287,026 B (62.8%)** | **-307,879 B (-11.9%)** |
+| **`ooffice`** (Silesia) | Compiled x86 Executable | 6,152,192 B | 2,594,905 B (57.8%) | **2,280,129 B (62.9%)** | **-314,776 B (-12.1%)** |
 | **`x-ray`** (Silesia) | 16-bit Medical Image | 8,474,240 B | 5,129,824 B (39.5%) | **4,806,155 B (43.3%)** | **-323,669 B (-6.3%)** |
 | **`mr`** (Silesia) | MRI Resonance Scan | 9,970,564 B | 3,102,439 B (68.9%) | **2,977,085 B (70.1%)** | **-125,354 B (-4.0%)** |
-| **`vcruntime140.dll`** | Windows x64 Runtime DLL | 120,400 B | 55,912 B (53.6%) | **54,879 B (54.4%)** | **-1,033 B (-1.8%)** |
+| **`vcruntime140.dll`** | Windows x64 Runtime DLL | 120,400 B | 55,912 B (53.6%) | **54,693 B (54.6%)** | **-1,219 B (-2.2%)** |
 | **`sensor_data`** | 64-bit Double Matrix | 262,144 B | 226,242 B (13.7%) | **163,277 B (37.7%)** | **-62,965 B (-27.8%)** |
 | **`telemetry`** | 16-bit Structured Pairs | 262,144 B | 210,086 B (19.9%) | **180,472 B (31.2%)** | **-29,614 B (-14.1%)** |
 | **`arm_binary`** | ARM Machine Code | 100,064 B | 22,680 B (77.3%) | **64 B (99.9%)** | **-22,616 B (-99.7%)** |
-| **Total Net Savings** | — | — | — | — | **-873,130 bytes (~873 KB)** |
+| **Total Net Savings** | — | — | — | — | **-880,213 bytes (~880 KB)** |
 
 *All outputs verified 100% lossless bit-for-bit with SHA-256 checksum validation.*
 
@@ -79,12 +79,12 @@ Measured on x86-64 hardware using the native C99 implementation (`binpack.c`):
 
 | Test File | Payload Size | Active Mode | Profiler Latency | Filter Throughput | Lossless Verification |
 | :--- | :---: | :--- | :---: | :---: | :---: |
-| `ooffice` | 6.15 MB | Machine Code x86 (BCJ) | **0.003 µs** | **1,839.9 MB/s** | PASS (100% bit-exact) |
-| `x-ray` | 8.47 MB | 16-bit Waveform (Delta-2) | **0.306 µs** | **4,454.7 MB/s** | PASS (100% bit-exact) |
-| `mr` | 9.97 MB | 16-bit Waveform (Delta-2) | **0.305 µs** | **5,161.0 MB/s** | PASS (100% bit-exact) |
-| `vcruntime140.dll` | 120 KB | Machine Code x64 (BCJ) | **0.003 µs** | **2,338.5 MB/s** | PASS (100% bit-exact) |
-| `sensor_data.raw` | 256 KB | 64-bit Doubles (Stride-8) | **4.357 µs** | **2,044.2 MB/s** | PASS (100% bit-exact) |
-| `telemetry_16bit.raw` | 256 KB | 16-bit Records (Stride-2) | **8.252 µs** | **3,852.1 MB/s** | PASS (100% bit-exact) |
+| `ooffice` | 6.15 MB | Machine Code x86 (BCJ) | **0.003 µs** | **1,864.5 MB/s** | PASS (100% bit-exact) |
+| `x-ray` | 8.47 MB | 16-bit Waveform (Delta-2) | **0.309 µs** | **4,437.8 MB/s** | PASS (100% bit-exact) |
+| `mr` | 9.97 MB | 16-bit Waveform (Delta-2) | **0.294 µs** | **4,808.4 MB/s** | PASS (100% bit-exact) |
+| `vcruntime140.dll` | 120 KB | Machine Code x64 (BCJ) | **0.003 µs** | **3,216.3 MB/s** | PASS (100% bit-exact) |
+| `sensor_data.raw` | 256 KB | 64-bit Doubles (Stride-8) | **3.972 µs** | **2,446.2 MB/s** | PASS (100% bit-exact) |
+| `telemetry_16bit.raw` | 256 KB | 16-bit Records (Stride-2) | **6.708 µs** | **3,888.0 MB/s** | PASS (100% bit-exact) |
 | `arm_binary.elf` | 100 KB | Machine Code ARM32 (ARM Filter) | **0.002 µs** | **4,438.5 MB/s** | PASS (100% bit-exact) |
 
 ---

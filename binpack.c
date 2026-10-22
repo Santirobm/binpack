@@ -24,6 +24,10 @@ static inline uint32_t read_u32_le(const uint8_t *p) {
            ((uint32_t)p[3] << 24);
 }
 
+static inline uint64_t read_u64_le(const uint8_t *p) {
+    return (uint64_t)read_u32_le(p) | ((uint64_t)read_u32_le(p + 4) << 32);
+}
+
 static inline int16_t read_i16_le(const uint8_t *p) {
     return (int16_t)read_u16_le(p);
 }
@@ -196,6 +200,92 @@ static void sha256_compute(const uint8_t *data, size_t len, uint8_t out[32]) {
 }
 
 /* ========================================================================= */
+/* Section-Aware Code Bounds Introspection (PE & ELF)                        */
+/* ========================================================================= */
+
+static void binpack_find_code_bounds(const uint8_t *data, size_t size, size_t *out_offset, size_t *out_length) {
+    *out_offset = 0;
+    *out_length = size;
+
+    /* 1. PE Section Header Table (.text / IMAGE_SCN_MEM_EXECUTE) */
+    if (size >= 0x40 && data[0] == 'M' && data[1] == 'Z') {
+        uint32_t pe_offset = read_u32_le(data + 0x3C);
+        if (pe_offset <= size - 24 &&
+            data[pe_offset] == 'P' && data[pe_offset+1] == 'E' &&
+            data[pe_offset+2] == 0 && data[pe_offset+3] == 0) {
+            uint16_t num_sections = read_u16_le(data + pe_offset + 6);
+            uint16_t opt_hdr_size = read_u16_le(data + pe_offset + 20);
+            size_t sec_table = pe_offset + 24 + opt_hdr_size;
+
+            for (uint16_t i = 0; i < num_sections; i++) {
+                size_t entry = sec_table + i * 40;
+                if (entry + 40 > size) break;
+                uint32_t raw_sz = read_u32_le(data + entry + 16);
+                uint32_t raw_ptr = read_u32_le(data + entry + 20);
+                uint32_t charact = read_u32_le(data + entry + 36);
+
+                int is_code = (memcmp(data + entry, ".text", 5) == 0) || ((charact & 0x20000000) != 0);
+                if (is_code && raw_sz > 0 && raw_ptr < size) {
+                    if (raw_ptr + raw_sz <= size) {
+                        *out_offset = raw_ptr;
+                        *out_length = raw_sz;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /* 2. ELF Program Header Table (Executable Segment PT_LOAD + PF_X) */
+    if (size >= 56 && data[0] == 0x7F && data[1] == 'E' && data[2] == 'L' && data[3] == 'F') {
+        uint8_t elf_class = data[4]; /* 1 = 32-bit, 2 = 64-bit */
+        if (elf_class == 1 && size >= 52) {
+            uint32_t phoff = read_u32_le(data + 28);
+            uint16_t phentsize = read_u16_le(data + 42);
+            uint16_t phnum = read_u16_le(data + 44);
+            if (phentsize >= 32 && phoff < size) {
+                for (uint16_t i = 0; i < phnum; i++) {
+                    size_t entry = phoff + i * phentsize;
+                    if (entry + 32 > size) break;
+                    uint32_t p_type = read_u32_le(data + entry);
+                    uint32_t p_offset = read_u32_le(data + entry + 4);
+                    uint32_t p_filesz = read_u32_le(data + entry + 16);
+                    uint32_t p_flags = read_u32_le(data + entry + 24);
+                    if (p_type == 1 && (p_flags & 1) && p_filesz > 0) {
+                        if (p_offset + p_filesz <= size) {
+                            *out_offset = p_offset;
+                            *out_length = p_filesz;
+                            return;
+                        }
+                    }
+                }
+            }
+        } else if (elf_class == 2 && size >= 64) {
+            uint64_t phoff = read_u64_le(data + 32);
+            uint16_t phentsize = read_u16_le(data + 54);
+            uint16_t phnum = read_u16_le(data + 56);
+            if (phentsize >= 56 && phoff < size) {
+                for (uint16_t i = 0; i < phnum; i++) {
+                    size_t entry = (size_t)phoff + i * phentsize;
+                    if (entry + 56 > size) break;
+                    uint32_t p_type = read_u32_le(data + entry);
+                    uint32_t p_flags = read_u32_le(data + entry + 4);
+                    uint64_t p_offset = read_u64_le(data + entry + 8);
+                    uint64_t p_filesz = read_u64_le(data + entry + 32);
+                    if (p_type == 1 && (p_flags & 1) && p_filesz > 0) {
+                        if (p_offset + p_filesz <= size) {
+                            *out_offset = (size_t)p_offset;
+                            *out_length = (size_t)p_filesz;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* ========================================================================= */
 /* Mode Introspection & Profiler                                             */
 /* ========================================================================= */
 
@@ -220,11 +310,15 @@ size_t binpack_padded_size(size_t size, size_t stride) {
     return rem == 0 ? size : (size + (stride - rem));
 }
 
-/* Branch conversion for x86/x64 (Relative CALL 0xE8 and JMP 0xE9 normalization) */
+/* Branch conversion for x86/x64 (Section-Aware Relative CALL 0xE8 and JMP 0xE9 normalization) */
 size_t binpack_filter_bcj_x86(uint8_t *data, size_t size, int encoding) {
     if (size < 5) return size;
-    size_t i = 0;
-    while (i <= size - 5) {
+    size_t offset = 0, length = size;
+    binpack_find_code_bounds(data, size, &offset, &length);
+
+    size_t i = offset;
+    size_t end = offset + length;
+    while (i <= end - 5) {
         uint8_t b = data[i];
         if (b == 0xE8 || b == 0xE9) {
             uint32_t src = read_u32_le(data + i + 1);
@@ -238,10 +332,14 @@ size_t binpack_filter_bcj_x86(uint8_t *data, size_t size, int encoding) {
     return size;
 }
 
-/* Branch conversion for ARM 32-bit (BL instruction normalization: opcode byte 3 == 0xEB) */
+/* Branch conversion for ARM 32-bit (Section-Aware BL instruction normalization: opcode byte 3 == 0xEB) */
 size_t binpack_filter_bcj_arm(uint8_t *data, size_t size, int encoding) {
     if (size < 4) return size;
-    for (size_t i = 0; i + 4 <= size; i += 4) {
+    size_t offset = 0, length = size;
+    binpack_find_code_bounds(data, size, &offset, &length);
+
+    size_t end = offset + length;
+    for (size_t i = offset; i + 4 <= end; i += 4) {
         if (data[i + 3] == 0xEB) { /* ARM32 BL opcode */
             uint32_t src = (uint32_t)data[i] |
                            ((uint32_t)data[i+1] << 8) |
@@ -255,10 +353,14 @@ size_t binpack_filter_bcj_arm(uint8_t *data, size_t size, int encoding) {
     return size;
 }
 
-/* Branch conversion for ARM64 / AArch64 (BL instruction normalization: top 6 bits == 0x25) */
+/* Branch conversion for ARM64 / AArch64 (Section-Aware BL instruction normalization: top 6 bits == 0x25) */
 size_t binpack_filter_bcj_arm64(uint8_t *data, size_t size, int encoding) {
     if (size < 4) return size;
-    for (size_t i = 0; i + 4 <= size; i += 4) {
+    size_t offset = 0, length = size;
+    binpack_find_code_bounds(data, size, &offset, &length);
+
+    size_t end = offset + length;
+    for (size_t i = offset; i + 4 <= end; i += 4) {
         uint32_t instr = read_u32_le(data + i);
         /* AArch64 BL instruction: bits 31-26 are 100101 (0x25) */
         if ((instr >> 26) == 0x25) {
