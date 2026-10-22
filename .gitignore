@@ -33,5 +33,6 @@ telemetry*
 
 *.obj
 *.exe
+*.pdb
 
 research/

@@ -1,11 +1,16 @@
 CC ?= gcc
-CFLAGS ?= -O3 -Wall -Wextra -std=c99
-TARGET = test_native
+CFLAGS ?= -O3 -Wall -Wextra -std=c99 -Ideps/include
+LDFLAGS ?= -Ldeps/lib -lzstd
+TARGET = binpack
+TEST_TARGET = test_native
 
-all: $(TARGET) libbinpack.a
+all: $(TARGET) $(TEST_TARGET) libbinpack.a
 
-$(TARGET): binpack.c test_native.c binpack.h
-	$(CC) $(CFLAGS) binpack.c test_native.c -o $(TARGET)
+$(TARGET): binpack.c binpack_cli.c binpack.h
+	$(CC) $(CFLAGS) binpack.c binpack_cli.c $(LDFLAGS) -o $(TARGET)
+
+$(TEST_TARGET): binpack.c test_native.c binpack.h
+	$(CC) $(CFLAGS) binpack.c test_native.c $(LDFLAGS) -o $(TEST_TARGET)
 
 libbinpack.a: binpack.o
 	ar rcs libbinpack.a binpack.o
@@ -14,6 +19,6 @@ binpack.o: binpack.c binpack.h
 	$(CC) $(CFLAGS) -c binpack.c -o binpack.o
 
 clean:
-	rm -f $(TARGET) *.o *.a *.so *.dll *.exe
+	rm -f $(TARGET) $(TEST_TARGET) *.o *.a *.so *.dll *.exe
 
 .PHONY: all clean
