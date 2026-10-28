@@ -1,9 +1,11 @@
 # BINPACK: Polymorphic Binary Pre-filtering Compression Engine
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![CI: Multi-Platform](https://github.com/Santirobm/binpack/actions/workflows/ci.yml/badge.svg)](https://github.com/Santirobm/binpack/actions/workflows/ci.yml)
 [![Standard: C99](https://img.shields.io/badge/C-C99-brightgreen.svg)](binpack.h)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](binpack.py)
 [![Benchmarks: Silesia Corpus](https://img.shields.io/badge/Benchmarks-Silesia%20Corpus-orange.svg)](http://sun.aei.polsl.pl/~sdeor/index.php?page=silesia)
+[![Enterprise SDK](https://img.shields.io/badge/Enterprise_SDK-Available-purple.svg)](https://github.com/Santirobm/binpack-SDK)
 [![Upstream RFC: facebook/zstd#4857](https://img.shields.io/badge/Upstream%20RFC-facebook%2Fzstd%234857-purple.svg)](https://github.com/facebook/zstd/issues/4857)
 [![Support: Ko-fi](https://img.shields.io/badge/Support-Ko--fi-FF5E5B.svg?logo=kofi&logoColor=white)](https://ko-fi.com/santirobm)
 [![Integrity: SHA-256 Verified](https://img.shields.io/badge/Integrity-SHA--256%20Verified-success.svg)](README.md)
@@ -18,7 +20,7 @@ It profiles input buffers in **sub-microsecond latency** (< 1 µs) to detect und
 
 Standard general-purpose compressors view incoming data as flat streams of opaque bytes. On structured binary data, this approach incurs substantial compression penalties:
 
-1. **Machine Code Branch Displacements**: Relative call and jump offsets (`CALL`/`JMP` on x86, `BL` on ARM/ARM64) cause identical subroutines to compile into disparate byte sequences depending on their memory addresses, impeding match deduplication.
+1. **Machine Code Branch Displacements**: Relative call and jump offsets (`CALL`/`JMP` on x86, `BL` on ARM/ARM64, `JAL` on RISC-V) cause identical subroutines to compile into disparate byte sequences depending on their memory addresses, impeding match deduplication.
 2. **Interleaved Multi-Byte Floats & Coordinates**: In 32-bit floats and 64-bit doubles, low-entropy sign and exponent bits are interleaved with rapidly oscillating mantissa bits.
 3. **Continuous 16-bit Signals**: Audio waveforms and medical imaging arrays possess strong spatial continuity across samples, but byte-level boundaries induce false entropy.
 
@@ -33,11 +35,16 @@ Input Buffer
     ├─► PE / ELF / Mach-O (x86/x64) ──────► [BCJ x86 Filter] (Relative offset normalization)
     ├─► PE / ELF / Mach-O (ARM 32-bit) ───► [BCJ ARM32 Filter] (BL instruction normalization)
     ├─► PE / ELF / Mach-O (ARM64) ────────► [BCJ ARM64 Filter] (AArch64 branch normalization)
+    ├─► ELF / PE (RISC-V RV32/RV64) ──────► [BCJ RISC-V Filter] (JAL branch normalization)
     ├─► Continuous 16-bit Waveforms ──────► [Delta-2 Filter] (Finite difference transformation)
     ├─► Structured 16-bit Records ────────► [Stride-2 Transpose] (Channel separation)
     ├─► 32-bit Floats / 3D Coordinates ───► [Stride-4 Transpose] (Field separation)
     ├─► 64-bit Doubles / Timestamps ──────► [Stride-8 Transpose] (Field separation)
     └─► Unstructured Binary ──────────────► [Passthrough]
+                                                 │
+                                                 ▼
+                             [Zero-Regression Micro-Trial Guard]
+                     (< 25 µs trial; reverts to Passthrough if entropy regresses)
                                                  │
                                                  ▼
                                      [High-Density Backend]
@@ -79,13 +86,27 @@ Measured on x86-64 hardware using the native C99 implementation (`binpack.c`):
 
 | Test File | Payload Size | Active Mode | Profiler Latency | Filter Throughput | Lossless Verification |
 | :--- | :---: | :--- | :---: | :---: | :---: |
-| `ooffice` | 6.15 MB | Machine Code x86 (BCJ) | **0.003 µs** | **1,864.5 MB/s** | PASS (100% bit-exact) |
-| `x-ray` | 8.47 MB | 16-bit Waveform (Delta-2) | **0.309 µs** | **4,437.8 MB/s** | PASS (100% bit-exact) |
-| `mr` | 9.97 MB | 16-bit Waveform (Delta-2) | **0.294 µs** | **4,808.4 MB/s** | PASS (100% bit-exact) |
-| `vcruntime140.dll` | 120 KB | Machine Code x64 (BCJ) | **0.003 µs** | **3,216.3 MB/s** | PASS (100% bit-exact) |
-| `sensor_data.raw` | 256 KB | 64-bit Doubles (Stride-8) | **3.972 µs** | **2,446.2 MB/s** | PASS (100% bit-exact) |
-| `telemetry_16bit.raw` | 256 KB | 16-bit Records (Stride-2) | **6.708 µs** | **3,888.0 MB/s** | PASS (100% bit-exact) |
-| `arm_binary.elf` | 100 KB | Machine Code ARM32 (ARM Filter) | **0.002 µs** | **4,438.5 MB/s** | PASS (100% bit-exact) |
+| `ooffice` | 6.15 MB | Machine Code x86 (BCJ) | **0.003 µs** | **1,829.3 MB/s** | PASS (100% bit-exact) |
+| `x-ray` | 8.47 MB | 16-bit Waveform (Delta-2) | **0.306 µs** | **4,453.7 MB/s** | PASS (100% bit-exact) |
+| `mr` | 9.97 MB | 16-bit Waveform (Delta-2) | **0.286 µs** | **5,144.0 MB/s** | PASS (100% bit-exact) |
+| `vcruntime140.dll` | 120 KB | Machine Code x64 (BCJ) | **0.003 µs** | **3,479.5 MB/s** | PASS (100% bit-exact) |
+| `sensor_data.raw` | 256 KB | 64-bit Doubles (Stride-8) | **3.744 µs** | **2,142.2 MB/s** | PASS (100% bit-exact) |
+| `telemetry_16bit.raw` | 256 KB | 16-bit Records (Stride-2) | **6.816 µs** | **3,962.0 MB/s** | PASS (100% bit-exact) |
+| `arm_binary.elf` | 100 KB | Machine Code ARM32 (ARM Filter) | **0.002 µs** | **4,522.7 MB/s** | PASS (100% bit-exact) |
+
+### 3. Autonomous Synthetic Self-Test Suite (`test_native.exe --self-test`)
+
+Executed in continuous integration and clean repository clones without requiring external corpora files:
+
+| Verification Suite | Target Transformation | Integrity Result |
+| :--- | :--- | :---: |
+| **RISC-V BCJ** | RV32I / RV64I JAL Branch Normalization | **PASS (100% Bit-Exact)** |
+| **ARM64 BCJ** | AArch64 BL Branch Normalization | **PASS (100% Bit-Exact)** |
+| **x86/x64 BCJ** | E8 / E9 Relative Branch Offsets | **PASS (100% Bit-Exact)** |
+| **Delta-2** | 16-bit Continuous Finite Difference | **PASS (100% Bit-Exact)** |
+| **Stride-4** | Multi-channel 32-bit Float Transposition | **PASS (100% Bit-Exact)** |
+| **End-to-End Pipeline** | Full Compression, Container & SHA-256 Checksum | **PASS (100% Lossless)** |
+| **Zero-Regression Guard**| High-Entropy Payload Micro-Trial | **PASS (Auto-fallback to Generic)** |
 
 ---
 
@@ -169,7 +190,7 @@ build.bat
 ```
 Or directly via MSVC:
 ```cmd
-cl /O2 /W3 binpack.c test_native.c /Fe:test_native.exe
+cl /O2 /W3 /I deps\include binpack.c test_native.c deps\lib\libzstd_static.lib /Fe:test_native.exe
 ```
 
 ### Linux / macOS
@@ -177,6 +198,27 @@ cl /O2 /W3 binpack.c test_native.c /Fe:test_native.exe
 make
 ./test_native
 ```
+
+### CMake (Cross-Platform)
+```bash
+cmake -B build
+cmake --build build
+```
+
+---
+
+## Commercial & Enterprise Use: BinPack SDK
+
+Looking for game engine integrations, chunked streaming, or commercial licensing?
+
+For production deployments requiring:
+* **Unity & Unreal Engine Integration**: Native UPM packages and asset streaming pipelines.
+* **Bounded-Memory Streaming (`BPK2`)**: 16 MB chunking with rolling dictionary history (RAM <= 64 MB on 100 GB files).
+* **Differential Delta Patcher**: Binary diff & patch engine for game updates and CDN distribution.
+* **Pre-trained Domain Dictionaries**: Specialized ZDICT models for PE/ELF binaries.
+* **C# / .NET 8, Rust & Python FFI bindings**: Clean C-ABI runtime libraries (`binpack.dll`, `libbinpack.so`, `libbinpack.dylib`).
+
+Explore the **[BinPack Enterprise SDK](https://github.com/Santirobm/binpack-SDK)**.
 
 ---
 

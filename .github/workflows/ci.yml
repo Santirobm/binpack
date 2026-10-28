@@ -1,0 +1,74 @@
+name: Continuous Integration & Cross-Platform Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Windows x86_64 (MSVC / Zig)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Compile Native C Engine & CLI
+        shell: cmd
+        run: .\build.bat
+
+      - name: Run Native Self-Test Suite
+        shell: cmd
+        run: .\test_native.exe --self-test
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Test Python CLI
+        run: python binpack.py --help
+
+      - name: Upload Windows Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binpack-windows-x64
+          path: binpack.exe
+
+  build-linux:
+    name: Linux x86_64 (GCC / Clang)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Zstandard Development Headers
+        run: sudo apt-get update && sudo apt-get install -y libzstd-dev build-essential
+
+      - name: Build with Make
+        run: make all
+
+      - name: Run Native Self-Test Suite
+        run: ./test_native --self-test
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Test Python CLI
+        run: python3 binpack.py --help
+
+      - name: Upload Linux Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binpack-linux-x64
+          path: binpack

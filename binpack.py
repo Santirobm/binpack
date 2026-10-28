@@ -46,12 +46,14 @@ class BinPackCodecV2:
     MODE_FWHT      = 6
     MODE_STRIDE_2  = 7
     MODE_BCJ_ARM64 = 8
+    MODE_BCJ_RISCV = 9
 
     MODE_NAMES = {
         MODE_GENERIC  : "Generic Binary (Direct Passthrough)",
         MODE_BCJ_X86  : "Machine Code PE/ELF x86/x64 (BCJ Filter)",
         MODE_BCJ_ARM  : "Machine Code ARM32 (ARM Filter)",
         MODE_BCJ_ARM64: "Machine Code ARM64 (AArch64 Filter)",
+        MODE_BCJ_RISCV: "Machine Code RISC-V (RV32/RV64 JAL Filter)",
         MODE_DELTA_2  : "16-bit Waveform / Medical Resonance (Delta-2)",
         MODE_STRIDE_2 : "Structured 16-bit Records (Stride-2 Transpose)",
         MODE_STRIDE_4 : "32-bit Floats / Coordinates (Stride-4 Transpose)",
@@ -169,6 +171,30 @@ class BinPackCodecV2:
         return bytes(d)
 
     @staticmethod
+    def _filter_bcj_riscv(data: bytes, encoding: bool) -> bytes:
+        offset, length = BinPackCodecV2._find_code_bounds(data)
+        d = bytearray(data)
+        end = offset + length
+        for i in range(offset, end - 3, 4):
+            instr = d[i] | (d[i+1] << 8) | (d[i+2] << 16) | (d[i+3] << 24)
+            if (instr & 0x7F) == 0x6F:  # RISC-V JAL opcode
+                offset20 = (((instr >> 31) & 1) << 19) | \
+                           (((instr >> 12) & 0xFF) << 11) | \
+                           (((instr >> 20) & 1) << 10) | \
+                           ((instr >> 21) & 0x3FF)
+                dest = (offset20 + (i >> 1)) & 0xFFFFF if encoding else (offset20 - (i >> 1)) & 0xFFFFF
+                instr = (instr & 0x00000FFF) | \
+                        (((dest >> 19) & 1) << 31) | \
+                        ((dest & 0x3FF) << 21) | \
+                        (((dest >> 10) & 1) << 20) | \
+                        (((dest >> 11) & 0xFF) << 12)
+                d[i]   = instr & 0xFF
+                d[i+1] = (instr >> 8) & 0xFF
+                d[i+2] = (instr >> 16) & 0xFF
+                d[i+3] = (instr >> 24) & 0xFF
+        return bytes(d)
+
+    @staticmethod
     def _filter_delta_encode(data: bytes, dist: int = 2) -> bytes:
         if dist <= 0 or not data:
             return data
@@ -217,11 +243,15 @@ class BinPackCodecV2:
                     return self.MODE_BCJ_ARM64
                 if machine in (0x01c0, 0x01c2, 0x01c4):
                     return self.MODE_BCJ_ARM
+                if machine in (0x5032, 0x5064):
+                    return self.MODE_BCJ_RISCV
                 return self.MODE_BCJ_X86
                 
         # 2. ELF Executable Header Inspection (Linux / Android)
         if data[:4] == b"\x7fELF" and n >= 20:
             e_machine = struct.unpack("<H", data[18:20])[0]
+            if e_machine == 0xF3:
+                return self.MODE_BCJ_RISCV
             if e_machine == 0xB7:
                 return self.MODE_BCJ_ARM64
             if e_machine == 0x28:
@@ -304,6 +334,8 @@ class BinPackCodecV2:
             filtered = self._filter_bcj_arm(data, encoding=True)
         elif mode == self.MODE_BCJ_ARM64:
             filtered = self._filter_bcj_arm64(data, encoding=True)
+        elif mode == self.MODE_BCJ_RISCV:
+            filtered = self._filter_bcj_riscv(data, encoding=True)
         elif mode == self.MODE_DELTA_2:
             filtered = self._filter_delta_encode(data, 2)
         elif mode == self.MODE_STRIDE_2:
@@ -345,6 +377,8 @@ class BinPackCodecV2:
             final_data = self._filter_bcj_arm(decomp, encoding=False)
         elif mode == self.MODE_BCJ_ARM64:
             final_data = self._filter_bcj_arm64(decomp, encoding=False)
+        elif mode == self.MODE_BCJ_RISCV:
+            final_data = self._filter_bcj_riscv(decomp, encoding=False)
         elif mode == self.MODE_DELTA_2:
             final_data = self._filter_delta_decode(decomp, 2)
         elif mode == self.MODE_STRIDE_2:

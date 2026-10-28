@@ -300,6 +300,7 @@ const char* binpack_mode_name(binpack_mode_t mode) {
         case BINPACK_MODE_STRIDE_8:  return "Doubles / 64-bit Timestamps (Stride-8 Transpose)";
         case BINPACK_MODE_FWHT:      return "Boolean Spectral Matrix (FWHT)";
         case BINPACK_MODE_STRIDE_2:  return "Structured 16-bit Tuples (Stride-2 Transpose)";
+        case BINPACK_MODE_BCJ_RISCV: return "Machine Code RISC-V (RV32/RV64 JAL Filter)";
         default:                     return "Unknown Mode";
     }
 }
@@ -367,6 +368,33 @@ size_t binpack_filter_bcj_arm64(uint8_t *data, size_t size, int encoding) {
             uint32_t src = instr & 0x03FFFFFF;
             uint32_t dest = encoding ? (src + (uint32_t)(i >> 2)) : (src - (uint32_t)(i >> 2));
             instr = (instr & 0xFC000000) | (dest & 0x03FFFFFF);
+            write_u32_le(data + i, instr);
+        }
+    }
+    return size;
+}
+
+/* Branch conversion for RISC-V (Section-Aware RV32I / RV64I JAL instruction normalization: opcode bits 6:0 == 0x6F) */
+size_t binpack_filter_bcj_riscv(uint8_t *data, size_t size, int encoding) {
+    if (size < 4) return size;
+    size_t offset = 0, length = size;
+    binpack_find_code_bounds(data, size, &offset, &length);
+
+    size_t end = offset + length;
+    for (size_t i = offset; i + 4 <= end; i += 4) {
+        uint32_t instr = read_u32_le(data + i);
+        if ((instr & 0x7F) == 0x6F) { /* RISC-V JAL opcode */
+            uint32_t offset20 = (((instr >> 31) & 1) << 19) |
+                                (((instr >> 12) & 0xFF) << 11) |
+                                (((instr >> 20) & 1) << 10) |
+                                ((instr >> 21) & 0x3FF);
+            uint32_t dest = encoding ? ((offset20 + (uint32_t)(i >> 1)) & 0xFFFFF)
+                                     : ((offset20 - (uint32_t)(i >> 1)) & 0xFFFFF);
+            instr = (instr & 0x00000FFF) |
+                    (((dest >> 19) & 1) << 31) |
+                    ((dest & 0x3FF) << 21) |
+                    (((dest >> 10) & 1) << 20) |
+                    (((dest >> 11) & 0xFF) << 12);
             write_u32_le(data + i, instr);
         }
     }
@@ -487,6 +515,9 @@ binpack_mode_t binpack_detect_mode(const uint8_t *data, size_t size) {
             if (machine == 0x01c0 || machine == 0x01c2 || machine == 0x01c4) {
                 return BINPACK_MODE_BCJ_ARM;
             }
+            if (machine == 0x5032 || machine == 0x5064) {
+                return BINPACK_MODE_BCJ_RISCV;
+            }
             return BINPACK_MODE_BCJ_X86;
         }
     }
@@ -494,6 +525,7 @@ binpack_mode_t binpack_detect_mode(const uint8_t *data, size_t size) {
     /* 2. ELF Executable */
     if (size >= 20 && data[0] == 0x7F && data[1] == 'E' && data[2] == 'L' && data[3] == 'F') {
         uint16_t machine = read_u16_le(data + 18);
+        if (machine == 0xF3) return BINPACK_MODE_BCJ_RISCV; /* 243 = EM_RISCV */
         if (machine == 0xB7) return BINPACK_MODE_BCJ_ARM64;
         if (machine == 0x28) return BINPACK_MODE_BCJ_ARM;
         return BINPACK_MODE_BCJ_X86;
@@ -576,6 +608,96 @@ int binpack_inspect_header(const uint8_t *pkg, size_t pkg_size,
     return 0;
 }
 
+/* Zero-Regression Micro-Trial Evaluator: evaluates candidate filter gain on a fast 32 KB sample */
+int binpack_evaluate_filter_gain(const uint8_t *sample, size_t sample_sz, binpack_mode_t mode) {
+    if (!sample || sample_sz < 64 || mode == BINPACK_MODE_GENERIC) {
+        return 1;
+    }
+
+    /* Choose a representative probe offset (code section for binaries, 25% offset for signals) */
+    size_t probe_off = 0;
+    if (mode == BINPACK_MODE_BCJ_X86 || mode == BINPACK_MODE_BCJ_ARM ||
+        mode == BINPACK_MODE_BCJ_ARM64 || mode == BINPACK_MODE_BCJ_RISCV) {
+        size_t code_off = 0, code_len = sample_sz;
+        binpack_find_code_bounds(sample, sample_sz, &code_off, &code_len);
+        probe_off = code_off;
+    } else if (sample_sz > 131072) {
+        probe_off = sample_sz / 4;
+    }
+    if (probe_off + 32768 > sample_sz) probe_off = 0;
+    const uint8_t *sample_ptr = sample + probe_off;
+    size_t remaining = sample_sz - probe_off;
+    size_t eval_len = remaining > 32768 ? 32768 : remaining;
+
+    uint8_t *sample_copy = (uint8_t*)malloc(eval_len + 64);
+    uint8_t *cmp_raw = (uint8_t*)malloc(eval_len + 256);
+    uint8_t *cmp_trans = (uint8_t*)malloc(eval_len + 256);
+    if (!sample_copy || !cmp_raw || !cmp_trans) {
+        free(sample_copy); free(cmp_raw); free(cmp_trans);
+        return 1;
+    }
+
+    /* Fast level 1 reference compression on raw sample */
+    size_t raw_sz = ZSTD_compress(cmp_raw, eval_len + 256, sample_ptr, eval_len, 1);
+    if (ZSTD_isError(raw_sz)) {
+        free(sample_copy); free(cmp_raw); free(cmp_trans);
+        return 1;
+    }
+
+    /* Apply candidate filter on sample copy */
+    size_t trans_len = eval_len;
+    switch (mode) {
+        case BINPACK_MODE_BCJ_X86:
+            memcpy(sample_copy, sample_ptr, eval_len);
+            binpack_filter_bcj_x86(sample_copy, eval_len, 1);
+            break;
+        case BINPACK_MODE_BCJ_ARM:
+            memcpy(sample_copy, sample_ptr, eval_len);
+            binpack_filter_bcj_arm(sample_copy, eval_len, 1);
+            break;
+        case BINPACK_MODE_BCJ_ARM64:
+            memcpy(sample_copy, sample_ptr, eval_len);
+            binpack_filter_bcj_arm64(sample_copy, eval_len, 1);
+            break;
+        case BINPACK_MODE_BCJ_RISCV:
+            memcpy(sample_copy, sample_ptr, eval_len);
+            binpack_filter_bcj_riscv(sample_copy, eval_len, 1);
+            break;
+        case BINPACK_MODE_DELTA_2:
+            binpack_filter_delta_encode(sample_ptr, sample_copy, eval_len, 2);
+            break;
+        case BINPACK_MODE_STRIDE_2:
+            binpack_transpose(sample_ptr, sample_copy, eval_len, 2);
+            trans_len = binpack_padded_size(eval_len, 2);
+            break;
+        case BINPACK_MODE_STRIDE_4:
+            binpack_transpose(sample_ptr, sample_copy, eval_len, 4);
+            trans_len = binpack_padded_size(eval_len, 4);
+            break;
+        case BINPACK_MODE_STRIDE_8:
+            binpack_transpose(sample_ptr, sample_copy, eval_len, 8);
+            trans_len = binpack_padded_size(eval_len, 8);
+            break;
+        default:
+            free(sample_copy); free(cmp_raw); free(cmp_trans);
+            return 1;
+    }
+
+    /* Fast level 1 trial compression on transformed sample */
+    size_t trans_sz = ZSTD_compress(cmp_trans, eval_len + 256, sample_copy, trans_len, 1);
+    int is_beneficial = 0;
+    if (!ZSTD_isError(trans_sz)) {
+        if (trans_sz < raw_sz) {
+            is_beneficial = 1;
+        }
+    }
+
+    free(sample_copy);
+    free(cmp_raw);
+    free(cmp_trans);
+    return is_beneficial;
+}
+
 size_t binpack_compress(const uint8_t *src, size_t src_size,
                         uint8_t *dst, size_t dst_capacity,
                         int level, int force_mode,
@@ -585,6 +707,12 @@ size_t binpack_compress(const uint8_t *src, size_t src_size,
     if (level > 22) level = 22;
 
     binpack_mode_t mode = (force_mode >= 0) ? (binpack_mode_t)force_mode : binpack_detect_mode(src, src_size);
+    /* Zero-Regression Guard: reject filter if trial doesn't reduce entropy */
+    if (force_mode < 0 && mode != BINPACK_MODE_GENERIC) {
+        if (!binpack_evaluate_filter_gain(src, src_size, mode)) {
+            mode = BINPACK_MODE_GENERIC;
+        }
+    }
     if (out_mode) *out_mode = mode;
 
     size_t padded_max = binpack_padded_size(src_size, 8);
@@ -607,6 +735,11 @@ size_t binpack_compress(const uint8_t *src, size_t src_size,
         case BINPACK_MODE_BCJ_ARM64:
             memcpy(filtered, src, src_size);
             binpack_filter_bcj_arm64(filtered, src_size, 1);
+            filtered_size = src_size;
+            break;
+        case BINPACK_MODE_BCJ_RISCV:
+            memcpy(filtered, src, src_size);
+            binpack_filter_bcj_riscv(filtered, src_size, 1);
             filtered_size = src_size;
             break;
         case BINPACK_MODE_DELTA_2:
@@ -686,6 +819,10 @@ size_t binpack_decompress(const uint8_t *pkg, size_t pkg_size,
         case BINPACK_MODE_BCJ_ARM64:
             memcpy(dst, temp, (size_t)orig_size);
             binpack_filter_bcj_arm64(dst, (size_t)orig_size, 0);
+            break;
+        case BINPACK_MODE_BCJ_RISCV:
+            memcpy(dst, temp, (size_t)orig_size);
+            binpack_filter_bcj_riscv(dst, (size_t)orig_size, 0);
             break;
         case BINPACK_MODE_DELTA_2:
             binpack_filter_delta_decode(temp, dst, (size_t)orig_size, 2);

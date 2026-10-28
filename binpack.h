@@ -30,7 +30,8 @@ typedef enum {
     BINPACK_MODE_STRIDE_8  = 5, /* 64-bit double / timestamp transposition */
     BINPACK_MODE_FWHT      = 6, /* Reserved / Boolean Spectral Mode */
     BINPACK_MODE_STRIDE_2  = 7, /* 16-bit tuple / struct transposition */
-    BINPACK_MODE_BCJ_ARM64 = 8  /* ARM64 (AArch64) BL branch normalization */
+    BINPACK_MODE_BCJ_ARM64 = 8, /* ARM64 (AArch64) BL branch normalization */
+    BINPACK_MODE_BCJ_RISCV = 9  /* RISC-V (RV32/RV64 JAL) branch normalization */
 } binpack_mode_t;
 
 /* Mode introspection */
@@ -46,6 +47,10 @@ binpack_mode_t binpack_detect_mode(const uint8_t *data, size_t size);
 size_t binpack_filter_bcj_x86(uint8_t *data, size_t size, int encoding);
 size_t binpack_filter_bcj_arm(uint8_t *data, size_t size, int encoding);
 size_t binpack_filter_bcj_arm64(uint8_t *data, size_t size, int encoding);
+size_t binpack_filter_bcj_riscv(uint8_t *data, size_t size, int encoding);
+
+/* Zero-Regression Evaluator: verifies filter yields compression gain vs raw passthrough */
+int    binpack_evaluate_filter_gain(const uint8_t *sample, size_t sample_sz, binpack_mode_t mode);
 
 void   binpack_filter_delta_encode(const uint8_t *src, uint8_t *dst, size_t size, size_t dist);
 void   binpack_filter_delta_decode(const uint8_t *src, uint8_t *dst, size_t size, size_t dist);
