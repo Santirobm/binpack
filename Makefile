@@ -1,6 +1,11 @@
 CC ?= gcc
-CFLAGS ?= -O3 -Wall -Wextra -std=c99 -Ideps/include
-LDFLAGS ?= -Ldeps/lib -lzstd
+CFLAGS ?= -O3 -Wall -Wextra -std=gnu99 -Ideps/include -D_POSIX_C_SOURCE=199309L
+
+ifeq ($(OS),Windows_NT)
+    LDFLAGS ?= -Ldeps/lib -lzstd
+else
+    LDFLAGS ?= -lzstd -lm
+endif
 TARGET = binpack
 TEST_TARGET = test_native
 

@@ -6,6 +6,10 @@
  * Licensed under the MIT License
  */
 
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 199309L
+#endif
+
 #include "binpack.h"
 #include <zstd.h>
 #include <stdio.h>
