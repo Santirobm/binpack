@@ -12,6 +12,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_MSC_VER)
+/* Alias MinGW-w64 stack probe to native MSVC stack probe */
+#pragma comment(linker, "/alternatename:___chkstk_ms=__chkstk")
+#endif
+
 /* Safe unaligned little-endian reads and writes */
 static inline uint16_t read_u16_le(const uint8_t *p) {
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);

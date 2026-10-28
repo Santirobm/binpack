@@ -9,12 +9,12 @@ set ZSTD_LIB=deps\lib\libzstd_static.lib
 where cl >nul 2>nul
 if %ERRORLEVEL% equ 0 (
     echo [BUILD] Compiling with MSVC cl.exe...
-    cl %CFLAGS% binpack.c binpack_cli.c %ZSTD_LIB% /Fe:binpack.exe
+    cl %CFLAGS% binpack.c binpack_cli.c %ZSTD_LIB% /Fe:binpack.exe /link /ALTERNATENAME:___chkstk_ms=__chkstk
     if errorlevel 1 (
         echo [ERROR] MSVC failed to compile binpack.exe
         exit /b 1
     )
-    cl %CFLAGS% binpack.c test_native.c %ZSTD_LIB% /Fe:test_native.exe
+    cl %CFLAGS% binpack.c test_native.c %ZSTD_LIB% /Fe:test_native.exe /link /ALTERNATENAME:___chkstk_ms=__chkstk
     if errorlevel 1 (
         echo [ERROR] MSVC failed to compile test_native.exe
         exit /b 1

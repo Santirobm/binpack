@@ -23,7 +23,8 @@ endif()
 
 # Compiler optimization flags
 if(MSVC)
-    add_compile_options(/O2 /W3)
+    add_compile_options(/O2 /W3 /D_CRT_SECURE_NO_WARNINGS)
+    add_link_options(/ALTERNATENAME:___chkstk_ms=__chkstk)
 else()
     add_compile_options(-O3 -Wall -Wextra)
 endif()
